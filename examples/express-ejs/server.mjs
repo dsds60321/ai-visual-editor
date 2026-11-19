@@ -1,0 +1,2 @@
+import express from 'express';
+const app=express();app.set('view engine','ejs');app.get('/',(req,res)=>res.render('index',{orders:[{id:'ORD-1082',name:'스튜디오 데스크',customer:'김민수',amount:'320,000',status:'배송 준비'},{id:'ORD-1081',name:'리넨 라운지 체어',customer:'이서연',amount:'185,000',status:'결제 완료'},{id:'ORD-1080',name:'우드 모니터 스탠드',customer:'박지훈',amount:'89,000',status:'배송 완료'}]}));app.listen(Number(process.env.PORT||18080),'127.0.0.1');

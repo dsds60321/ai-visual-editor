@@ -1,0 +1,31 @@
+{
+  "name": "ai-visual-editor",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/assets.mjs",
+    "agent": "node dist/agent/main.js",
+    "test": "node --import tsx --test agent/tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "check": "tsc --noEmit",
+    "setup": "node scripts/setup.mjs",
+    "register": "node scripts/register.mjs",
+    "pretest": "npm run build"
+  },
+  "dependencies": {
+    "diff": "^8.0.0",
+    "monaco-editor": "^0.52.2",
+    "ws": "^8.18.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

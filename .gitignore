@@ -1,0 +1,11 @@
+node_modules/
+dist/
+target/
+.data/
+agent.config.json
+.env
+playwright-report/
+test-results/
+*.log
+
+hub/backend/src/main/resources/static/

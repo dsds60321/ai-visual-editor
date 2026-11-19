@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Hub" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="dev.visual.Application" />
+    <module name="visual-editor-hub" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/hub/backend" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
