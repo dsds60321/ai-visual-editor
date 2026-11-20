@@ -15,7 +15,11 @@ config.dataDir=await fs.realpath(config.dataDir);
 // Prevent two local Agents using different connections from racing one project's locks.
 const lock=path.join(config.dataDir,'agent.lock');try{await fs.mkdir(lock);}catch{throw Error('Agent가 이미 실행 중이거나 종료되지 않은 잠금이 있습니다. agent.lock/pid의 프로세스가 종료됐는지 확인하세요');}
 await fs.writeFile(path.join(lock,'pid'),String(process.pid),{mode:0o600});
-const tasks=new Tasks(config);let socket:WebSocket;let closing=false;let heartbeat:NodeJS.Timeout;
+let socket:WebSocket;let closing=false;let heartbeat:NodeJS.Timeout;
+const tasks=new Tasks(config,(taskId,event)=>{
+  if(!closing&&socket?.readyState===WebSocket.OPEN&&socket.bufferedAmount<1_000_000)
+    socket.send(JSON.stringify({taskId,event}));
+});
 const inFlight=new Set<Promise<void>>();
 function connect(){
   if(closing)return;

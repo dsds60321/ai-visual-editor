@@ -23,10 +23,15 @@ export class Codex {
     await fs.mkdir(codexHome,{recursive:true,mode:0o700});
     try {await fs.copyFile(path.join(process.env.CODEX_HOME||path.join(os.homedir(),'.codex'),'auth.json'),path.join(codexHome,'auth.json'));await fs.chmod(path.join(codexHome,'auth.json'),0o600);}catch(e:any){if(e.code==='ENOENT')throw Error('codex login을 먼저 실행하세요');throw e;}
     // Inherit local login only; MCP servers, plugins and writable roots from the IDE must not escape workspace isolation.
-    this.cp=spawn(process.env.CODEX_BIN||'codex',['app-server','--listen','stdio://','-c','sandbox_workspace_write.writable_roots=[]'],{cwd:this.work,env:{PATH:process.env.PATH,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE,SystemRoot:process.env.SystemRoot,CODEX_HOME:codexHome},stdio:'pipe'});
-    this.cp.on('error',e=>this.fail(e));this.cp.on('exit',()=>this.fail(Error('Codex App Server 종료. 로그인/설치 상태를 확인하세요')));
-    this.cp.stderr.on('data',()=>{});
-    createInterface({input:this.cp.stdout}).on('line',line=>{
+    const child=spawn(process.env.CODEX_BIN||'codex',['app-server','--listen','stdio://','-c','sandbox_workspace_write.writable_roots=[]'],{cwd:this.work,env:{PATH:process.env.PATH,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE,SystemRoot:process.env.SystemRoot,CODEX_HOME:codexHome},stdio:'pipe'});
+    this.cp=child;
+    const failed=(error:Error)=>{if(this.cp===child)this.fail(error);};
+    child.on('error',failed);
+    child.on('exit',()=>failed(Error('Codex App Server 종료. 로그인/설치 상태를 확인하세요')));
+    child.stdin.on('error',failed);
+    child.stderr.on('data',()=>{});
+    createInterface({input:child.stdout}).on('line',line=>{
+      if(this.cp!==child)return;
       let m:any;try{m=JSON.parse(line);}catch{return;}
       if(m.method&&m.id!==undefined){
         this.event('approval',`${m.method}: MVP에서는 권한 확대 요청을 거절합니다`);
@@ -87,8 +92,16 @@ export class Codex {
     }catch(e){this.running=false;throw e;}
   }
   async stop(){if(this.running&&this.turnId)await this.rpc('turn/interrupt',{threadId:this.threadId,turnId:this.turnId});}
-  close(){this.cp?.kill();this.cp=undefined;}
-  private fail(error:Error){for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}this.pending.clear();this.running=false;this.cp=undefined;this.threadId=undefined;this.defaultModel=undefined;this.defaultEffort=undefined;this.modelCatalog=undefined;this.event('error',error.message);this.done();}
+  close(){this.reset(Error('Codex 연결이 닫혔습니다'));}
+  private reset(error:Error){
+    const child=this.cp;
+    this.cp=undefined;
+    child?.kill();
+    for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}
+    this.pending.clear();this.running=false;this.threadId=undefined;
+    this.defaultModel=undefined;this.defaultEffort=undefined;this.modelCatalog=undefined;
+  }
+  private fail(error:Error){this.reset(error);this.event('error',error.message);this.done();}
 }
 
 export async function listAvailableModels(dataDir:string){

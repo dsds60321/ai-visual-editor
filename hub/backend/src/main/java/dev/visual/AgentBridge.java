@@ -4,6 +4,7 @@ import java.util.concurrent.*;
 import java.io.IOException;
 import com.fasterxml.jackson.databind.*;
 import org.springframework.stereotype.Component;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.socket.*;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
@@ -13,6 +14,12 @@ public class AgentBridge extends TextWebSocketHandler {
     private final ObjectMapper mapper;
     private final ConcurrentHashMap<String,WebSocketSession> agents=new ConcurrentHashMap<>();
     private record Pending(String user,String sessionId,CompletableFuture<JsonNode> future) {}
+    private record Subscription(String user,String taskId,SseEmitter emitter) {}
+    private final Set<Subscription> subscriptions=ConcurrentHashMap.newKeySet();
+    // Slow browsers must not hold up Agent replies or grow an unbounded delivery queue.
+    private final ThreadPoolExecutor streamWriter=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(256),work->{
+        var thread=new Thread(work,"chat-stream");thread.setDaemon(true);return thread;
+    },new ThreadPoolExecutor.DiscardPolicy());
     private final ConcurrentHashMap<String,Pending> pending=new ConcurrentHashMap<>();
     public AgentBridge(ObjectMapper mapper){this.mapper=mapper;}
     @Override public void afterConnectionEstablished(WebSocketSession raw) throws Exception {
@@ -26,9 +33,41 @@ public class AgentBridge extends TextWebSocketHandler {
         pending.forEach((id,p)->{if(p.sessionId().equals(s.getId())&&pending.remove(id,p))p.future().completeExceptionally(new IllegalStateException("Agent 연결 종료"));});
     }
     @Override protected void handleTextMessage(WebSocketSession s,TextMessage message) throws IOException {
-        var m=mapper.readTree(message.getPayload());var id=m.path("id").asText();var p=pending.get(id);
-        if(p!=null&&p.sessionId().equals(s.getId())&&p.user().equals(s.getAttributes().get("user"))&&pending.remove(id,p))p.future().complete(m);
+        var m=mapper.readTree(message.getPayload());
+        var user=(String)s.getAttributes().get("user");
+        var connected=agents.get(user);
+        if(connected==null||!s.getId().equals(connected.getId()))return;
+        if(m.has("event")){
+            var taskId=m.path("taskId").asText();
+            var event=m.path("event");
+            if(!event.isObject()||!event.path("seq").canConvertToLong())return;
+            var recipients=subscriptions.stream().filter(stream->stream.user().equals(user)&&stream.taskId().equals(taskId)).toList();
+            if(recipients.isEmpty())return;
+            streamWriter.execute(()->{
+                for(var subscription:recipients){
+                    if(!subscriptions.contains(subscription))continue;
+                    try{subscription.emitter().send(SseEmitter.event().data(event,org.springframework.http.MediaType.APPLICATION_JSON));}
+                    catch(IOException|IllegalStateException error){subscriptions.remove(subscription);}
+                }
+            });
+            return;
+        }
+        var id=m.path("id").asText();var p=pending.get(id);
+        if(p!=null&&p.sessionId().equals(s.getId())&&p.user().equals(user)&&pending.remove(id,p))p.future().complete(m);
     }
+
+    public synchronized SseEmitter stream(String user,String taskId) throws IOException {
+        if(subscriptions.size()>=16)throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        var emitter=new SseEmitter(45_000L);
+        var subscription=new Subscription(user,taskId,emitter);
+        emitter.onCompletion(()->subscriptions.remove(subscription));
+        emitter.onTimeout(emitter::complete);
+        emitter.onError(error->subscriptions.remove(subscription));
+        emitter.send(SseEmitter.event().comment("connected"));
+        subscriptions.add(subscription);
+        return emitter;
+    }
+
     @org.springframework.context.event.EventListener
     public void closeAgents(org.springframework.context.event.ContextClosedEvent event) {
         var shutdown = new CloseStatus(4000, "Hub shutdown");
@@ -36,6 +75,8 @@ public class AgentBridge extends TextWebSocketHandler {
             try { agent.close(shutdown); }
             catch (IOException error) { LOG.warn("Could not notify Agent of Hub shutdown", error); }
         }
+        streamWriter.shutdownNow();
+        for(var subscription:subscriptions)subscription.emitter().complete();
     }
 
     public boolean connected(String user){var s=agents.get(user);return s!=null&&s.isOpen();}

@@ -59,9 +59,15 @@ public class Api {
     }
 
     @GetMapping("/api/tasks/{id}")
-    public Object status(Principal user, @PathVariable String id) throws Exception {
+    public Object status(Principal user, @PathVariable String id, @RequestParam(defaultValue="0") long after) throws Exception {
         own(id, user);
-        return bridge.call(user.getName(), "status", Map.of("taskId", id));
+        return bridge.call(user.getName(), "status", Map.of("taskId", id, "after", Math.max(0, after)));
+    }
+
+    @GetMapping(value="/api/tasks/{id}/events",produces=MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.SseEmitter> events(Principal user,@PathVariable String id) throws java.io.IOException {
+        own(id,user);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).header("X-Accel-Buffering","no").body(bridge.stream(user.getName(),id));
     }
 
     @PostMapping("/api/tasks/{id}/{action}")

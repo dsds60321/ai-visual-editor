@@ -32,5 +32,7 @@ class ApiTest {
  when(bridge.call(eq("alice"),eq("status"),any())).thenReturn(mapper.readTree("{\"id\":\"owned\"}"));
  mvc.perform(post("/api/tasks").with(csrf()).contentType("application/json").content("{\"projectId\":\"demo\"}")).andExpect(status().isOk());
  mvc.perform(get("/api/tasks/owned")).andExpect(status().isOk());mvc.perform(get("/api/tasks/owned").with(user("bob"))).andExpect(status().isNotFound());
+ mvc.perform(get("/api/tasks/owned/events").with(user("bob"))).andExpect(status().isNotFound());
+ verify(bridge,never()).stream(anyString(),anyString());
  }
 }

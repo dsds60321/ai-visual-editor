@@ -13,17 +13,18 @@ import { preview } from '../preview/index.js';
 import { openInteractivePreview, type Selection } from '../preview/interactive.js';
 type RequestChange={id:string;changed:boolean;reverted:boolean};
 type TaskEvent={seq:number;type:string;text:string;requestId?:string};
-export type Task={id:string;project:Project;original:string;base:string;work:string;dir:string;exclude:string[];state:string;runtime:Runtime;codex:Codex;events:TaskEvent[];requestEvents:TaskEvent[];seq:number;busy:boolean;previewReady:boolean;previewBase:string;version:number;requests:RequestChange[];currentRequest?:{id:string;before:Record<string,string>};revertedSinceChat?:boolean;finishing?:Promise<void>;watcher?:FSWatcher;interactive?:Awaited<ReturnType<typeof openInteractivePreview>>;interactiveSelection?:{id:number;data:Selection}};
+export type Task={id:string;project:Project;original:string;base:string;work:string;dir:string;exclude:string[];state:string;runtime:Runtime;codex:Codex;events:TaskEvent[];requestEvents:TaskEvent[];seq:number;busy:boolean;previewReady:boolean;previewBase:string;version:number;rebuildSeq?:number;rebuildPending?:boolean;requests:RequestChange[];currentRequest?:{id:string;before:Record<string,string>};revertedSinceChat?:boolean;finishing?:Promise<void>;watcher?:FSWatcher;interactive?:Awaited<ReturnType<typeof openInteractivePreview>>;interactiveSelection?:{id:number;data:Selection}};
 export class Tasks {
   tasks=new Map<string,Task>();
   private closing = false;
   private creatingPorts = new Set<number>();
-  constructor(readonly config:Config){}
+  constructor(readonly config:Config, private readonly publish=(taskId:string,event:TaskEvent)=>{}){}
   async projects(){return Promise.all(this.config.projects.map(async p=>({id:p.id,name:p.name,runtime:p.runtime,port:p.port,...await detect(p.path)})));}
   event(t:Task,type:string,text:string,requestId?:string){
     const entry={seq:++t.seq,type,text:redact(text.replaceAll(t.previewBase||'__no_preview__','[Preview URL]')).slice(0,12000),requestId};
     if(requestId)t.requestEvents.push(entry);
     else{t.events.push(entry);if(t.events.length>500)t.events.shift();}
+    this.publish(t.id,entry);
   }
   async create(projectId:string){
     const p=this.config.projects.find(p=>p.id===projectId);if(!p)throw Error('이 PC에 등록되지 않은 프로젝트');
@@ -64,37 +65,51 @@ export class Tasks {
   }
   private async finishRequest(t:Task){
     t.busy=true;
+    const changedAt=Date.now();
     try{
+      let changedFiles:string[]|undefined;
       const request=t.currentRequest;
       t.currentRequest=undefined;
       if(request){
         const dir=path.join(t.dir,'requests',request.id);
         try{
-          const changed=await finishCheckpoint(t.work,dir,t.exclude,request.before);
-          t.requests.push({id:request.id,changed,reverted:false});
+          changedFiles=await finishCheckpoint(t.work,dir,t.exclude,request.before);
+          t.requests.push({id:request.id,changed:changedFiles.length>0,reverted:false});
           this.event(t,'request-diff','',request.id);
         }catch(e){this.event(t,'error',`요청별 변경 기록을 저장하지 못했습니다: ${String(e)}`);}
       }
-      await this.afterEdit(t);
+      await this.afterEdit(t,changedFiles,changedAt);
     }finally{t.busy=false;}
   }
-  async afterEdit(t:Task){
+  async afterEdit(t:Task,changedFiles?:string[],changedAt=Date.now()){
     t.state='review';t.version++;
-    if(t.project.refresh==='restart'&&t.previewReady&&t.runtime.running){
+    const reloadOnly=changedFiles?.every(file=>
+      /\.(?:css|m?js|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf)$/i.test(file)&&
+      t.project.staticPreviewDirs.some(dir=>file.startsWith(dir+'/'))
+    );
+    if(t.project.refresh==='restart'&&t.previewReady&&t.runtime.running&&(!reloadOnly||t.rebuildPending)){
+      t.rebuildPending=true;
       t.busy=true;t.state='rebuilding';
-      try{await t.runtime.rebuild(()=>{t.previewReady=false;});t.previewReady=true;this.event(t,'status','Preview 재빌드 완료');}
+      try{await t.runtime.rebuild(()=>{t.previewReady=false;});t.previewReady=true;t.rebuildPending=false;t.rebuildSeq=t.seq+1;this.event(t,'status','Preview 재빌드 완료');}
       catch(e){this.event(t,'error',String(e));}
       finally{t.busy=false;t.state='review';t.version++;}
+    }else if(t.project.refresh==='restart'&&t.previewReady&&reloadOnly&&changedFiles?.length){
+      const remaining=t.project.staticPreviewCacheMs-(Date.now()-changedAt);
+      if(remaining>0){
+        t.state='refreshing';
+        await new Promise(resolve=>setTimeout(resolve,remaining));
+        t.state='review';t.version++;
+      }
     }
   }
   get(id:string){const t=this.tasks.get(id);if(!t)throw Error('현재 Agent의 작업을 찾을 수 없습니다');return t;}
   private supportsInteractive(t:Task){return t.project.runtime==='command'&&t.project.pathPrefix==='root'&&['127.0.0.1','localhost','[::1]'].includes(new URL(this.config.hub).hostname);}
-  status(t:Task){return {id:t.id,projectId:t.project.id,state:t.state,running:t.codex.running,busy:t.busy,version:t.version,previewReady:t.previewReady&&t.runtime.running,previewBase:t.previewBase,previewPath:t.project.previewPath,interactiveAvailable:this.supportsInteractive(t),interactiveOrigin:t.interactive?.origin,interactiveSelection:t.interactiveSelection,events:[...t.events,...t.requestEvents].sort((a,b)=>a.seq-b.seq),requests:t.requests};}
+  status(t:Task,after=0){return {id:t.id,projectId:t.project.id,state:t.state,running:t.codex.running,busy:t.busy,version:t.version,rebuildSeq:t.rebuildSeq,previewReady:t.previewReady&&t.runtime.running,previewBase:t.previewBase,previewPath:t.project.previewPath,interactiveAvailable:this.supportsInteractive(t),interactiveOrigin:t.interactive?.origin,interactiveSelection:t.interactiveSelection,events:[...t.events,...t.requestEvents].filter(event=>event.seq>after).sort((a,b)=>a.seq-b.seq),requests:t.requests};}
   async command(method:string,p:any){
     if(method==='projects')return this.projects();if(method==='create')return this.create(p.projectId);
     if(method==='models')return listAvailableModels(this.config.dataDir);
     const t=this.get(p.taskId);
-    if(method==='status')return this.status(t);
+    if(method==='status')return this.status(t,p.after);
     if(method==='stop'){await t.codex.stop();return {ok:true};}
     if(method==='preview'){if(!t.previewReady||!t.runtime.running)throw Error('Preview 서버가 준비되지 않았습니다');return preview(t.project,p.path,t.previewBase);}
     if(['applied','discarded'].includes(t.state)&&(method==='diff'||method==='request-diff'))throw Error('종료된 작업의 Diff는 더 이상 열 수 없습니다');
@@ -118,7 +133,7 @@ export class Tasks {
         await apply({id:t.id,original:t.work,base:after,work:before,dir:attempt,exclude:t.exclude,expectedOriginal},this.config.dataDir,reverse.revision,reverse.changes.map(c=>c.file),true);
         request.reverted=true;t.revertedSinceChat=true;
         await fs.rm(attempt,{recursive:true,force:true}).catch(e=>this.event(t,'error',String(e)));
-        await this.afterEdit(t);
+        await this.afterEdit(t,reverse.changes.map(change=>change.file));
         return this.status(t);
       }
       if(['applied','discarded'].includes(t.state))throw Error('종료된 작업입니다. 새 작업을 생성하세요');
@@ -131,7 +146,7 @@ export class Tasks {
           const origins=[protocol+'//127.0.0.1'+port,protocol+'//localhost'+port];
           t.interactive=await openInteractivePreview(t.project.port,origins,()=>t.previewReady&&t.runtime.running,data=>{
             t.interactiveSelection={id:(t.interactiveSelection?.id||0)+1,data};
-          });
+          },t.project.staticPreviewDirs.length>0);
         }
         return {url:t.interactive.origin+t.project.previewPath};
       }
@@ -152,7 +167,7 @@ export class Tasks {
         if(method==='stop-preview')return {ok:true};
       }
       if(method==='start-preview'||method==='restart'){
-        if(!t.previewReady||!t.runtime.running){t.previewReady=false;await t.runtime.start();t.previewReady=true;}
+        if(!t.previewReady||!t.runtime.running){t.previewReady=false;await t.runtime.start();t.previewReady=true;t.rebuildPending=false;}
         return {ok:true};
       }
       if(method==='apply'){

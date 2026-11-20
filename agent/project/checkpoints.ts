@@ -36,5 +36,5 @@ export async function finishCheckpoint(source:string,dir:string,exclude:string[]
   await verifyInventory(source,exclude,after);
   await fs.writeFile(path.join(dir,'after.json'),JSON.stringify(after),{mode:0o600});
   await fs.rm(pending,{recursive:true,force:true});
-  return oldFiles.length>0||newFiles.length>0;
+  return [...new Set([...oldFiles,...newFiles].map(([file])=>file))];
 }

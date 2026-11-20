@@ -15,6 +15,7 @@ test('interactive Preview forwards login and HTTP actions on an isolated origin'
       return;
     }
     if(req.headers.cookie!=='session=fixture'){res.writeHead(401).end();return;}
+    if(req.url==='/style.css'){res.writeHead(200,{'Cache-Control':'max-age=3600','Content-Type':'text/css'}).end('body{}');return;}
     if(req.url==='/private'){res.writeHead(200,{'X-Frame-Options':'DENY'}).end();return;}
     res.writeHead(200,{'Content-Type':'text/html','Content-Security-Policy':"script-src 'self'"}).end('<html><head></head><body>Dashboard</body></html>');
   });
@@ -22,7 +23,7 @@ test('interactive Preview forwards login and HTTP actions on an isolated origin'
   t.after(()=>new Promise<void>(resolve=>upstream.close(()=>resolve())));
   let ready=true,selected:unknown;
   const hub='http://127.0.0.1:8080';
-  const proxy=await openInteractivePreview((upstream.address() as AddressInfo).port,[hub],()=>ready,value=>{selected=value;});
+  const proxy=await openInteractivePreview((upstream.address() as AddressInfo).port,[hub],()=>ready,value=>{selected=value;},true);
   t.after(()=>proxy.close());
   const address=new URL(proxy.origin);
   function call(path:string,method='GET',headers:OutgoingHttpHeaders={},body?:string){
@@ -47,6 +48,10 @@ test('interactive Preview forwards login and HTTP actions on an isolated origin'
   assert.equal(dashboard.status,200);
   assert.equal(dashboard.headers['content-security-policy'],"script-src 'self', frame-ancestors 'self' "+hub);
   assert.match(dashboard.body,/data-interactive="true"/);
+  const style=await call('/style.css','GET',{'Sec-Fetch-Site':'same-origin','Sec-Fetch-Dest':'style',Cookie:'session=fixture'});
+  assert.equal(style.status,200);
+  assert.equal(style.headers['cache-control'],'no-store');
+  assert.equal((await call('/style.css')).status,401);
   assert.equal((await call('/private','GET',{...frameHeaders,Referer:hub+'/'})).headers['content-security-policy'],"frame-ancestors 'none'");
   const payload={path:'/dashboard',rect:{x:1,y:1,width:10,height:10},elements:[{tag:'h1',selector:'body > h1',dataAttributes:['data-subject'],children:[],value:'private'}]};
   const headers={Origin:proxy.origin,'Content-Type':'application/json'};

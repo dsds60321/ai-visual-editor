@@ -8,6 +8,7 @@ import { inventory, safePath, detect, hash } from '../project/files.js';
 import { diff } from '../diff/index.js';
 import { apply,withLock } from '../apply/index.js';
 import { Tasks } from '../project/tasks.js';
+import { Codex } from '../codex/index.js';
 import { requestSchema, projectSchema } from '../../shared/protocol.js';
 async function fixture(t:any){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'ave-test-')));t.after(()=>fs.rm(root,{recursive:true,force:true}));const original=path.join(root,'original'),base=path.join(root,'base'),work=path.join(root,'work'),dir=path.join(root,'task'),data=path.join(root,'data');for(const p of[original,base,work,dir,data]){await fs.mkdir(p);if([original,base,work].includes(p))await fs.writeFile(path.join(p,'index.html'),'<h1>Original</h1>');}return {id:'test',root,original,base,work,dir,data,exclude:[]};}
 test('snapshot captures uncommitted disk state, excludes secrets, and rejects symlinks',async t=>{const f=await fixture(t);await fs.writeFile(path.join(f.original,'.env'),'TOKEN=secret');await fs.mkdir(path.join(f.original,'node_modules'));await fs.writeFile(path.join(f.original,'node_modules','x'),'x');assert.deepEqual(Object.keys(await inventory(f.original)),['index.html']);await fs.symlink('/etc/hosts',path.join(f.original,'escape'));await assert.rejects(inventory(f.original),/심볼릭/);assert.deepEqual(Object.keys(await inventory(f.original,['escape'])),['index.html']);});
@@ -172,4 +173,77 @@ test('shutdown cleanup removes current and old workspaces but leaves recovery-re
   assert.equal(await fs.readFile(path.join(f.original,'index.html'),'utf8'),'<h1>Original</h1>');
   assert.equal(await fs.readFile(config,'utf8'),'keep');
   await fs.access(path.join(recovery,'apply.json'));
+});
+
+test('intentional Codex shutdown is quiet but an unexpected child exit still reports an error',{skip:process.platform==='win32'},async t=>{
+  const f=await fixture(t),bin=path.join(f.dir,'fake-codex');
+  await fs.writeFile(bin,`#!/usr/bin/env node
+const rl=require('node:readline').createInterface({input:process.stdin});
+rl.on('line',line=>{
+  const {id,method}=JSON.parse(line);
+  if(id===undefined)return;
+  const result=method==='model/list'?{data:[{model:String(process.pid),displayName:'Fake'}]}:{};
+  process.stdout.write(JSON.stringify({id,result})+'\\n');
+});
+`,{mode:0o700});
+  const oldBin=process.env.CODEX_BIN;
+  process.env.CODEX_BIN=bin;
+  t.after(()=>{if(oldBin===undefined)delete process.env.CODEX_BIN;else process.env.CODEX_BIN=oldBin;});
+  t.mock.method(fs,'copyFile',async(_source,destination)=>fs.writeFile(destination,'{}'));
+  const errors:string[]=[];
+  let finished=()=>{};
+  const codex=new Codex(f.work,(type,message)=>{if(type==='error')errors.push(message);},()=>finished());
+  t.after(()=>codex.close());
+  const [first]=await codex.listModels();
+  codex.close();
+  const [second]=await codex.listModels();
+  assert.notEqual(first.id,second.id);
+  assert.deepEqual(errors,[]);
+  const unexpected=new Promise<void>(resolve=>{finished=resolve;});
+  process.kill(Number(second.id),'SIGTERM');
+  await unexpected;
+  assert.equal(errors.length,1);
+  assert.match(errors[0],/Codex App Server 종료/);
+});
+
+test('only directly served assets skip Preview rebuild, including on undo',async t=>{
+  const f=await fixture(t),port=await freePort();
+  await fs.mkdir(path.join(f.original,'public'));
+  await fs.writeFile(path.join(f.original,'public','style.css'),'before');
+  const project=projectSchema.parse({id:'assets',name:'Assets',path:f.original,runtime:'static',refresh:'restart',port,safePreview:true,
+    staticPreviewDirs:['public'],staticPreviewCacheMs:10});
+  assert.equal(projectSchema.safeParse({...project,staticPreviewDirs:['public/../other']}).success,false);
+  const tasks=new Tasks({hub:'ws://127.0.0.1:8080/agent',user:'tester',token:'x'.repeat(32),dataDir:f.data,projects:[project]});
+  t.after(()=>tasks.close());
+  const {id:taskId}=await tasks.create(project.id),task=tasks.get(taskId);
+  let rebuilds=0,failNext=false;
+  task.runtime.rebuild=async()=>{rebuilds++;if(failNext){failNext=false;throw Error('test build failure');}};
+  task.codex.chat=async prompt=>{
+    if(prompt==='no changes')return;
+    if(prompt==='outside')await fs.writeFile(path.join(task.work,'build.js'),'build setting');
+    else{
+      await fs.writeFile(path.join(task.work,'public','style.css'),prompt);
+      if(prompt==='mixed')await fs.writeFile(path.join(task.work,'Server.java'),'class Server {}');
+      if(prompt==='xml')await fs.writeFile(path.join(task.work,'public','config.xml'),'<config/>');
+    }
+  };
+  const chat=prompt=>tasks.command('chat',{taskId,prompt});
+  await chat('static');
+  assert.equal(rebuilds,0);
+  const requestId=task.requests.at(-1)!.id;
+  const diff=await tasks.command('request-diff',{taskId,requestId}) as Awaited<ReturnType<typeof import('../diff/index.js').diff>>;
+  assert.deepEqual(diff.changes.map(c=>c.file),['public/style.css']);
+  const url='http://127.0.0.1:'+port+'/public/style.css';
+  assert.equal(await (await fetch(url)).text(),'static');
+  await tasks.command('revert-request',{taskId,requestId,approved:true});
+  assert.equal(rebuilds,0);
+  assert.equal(await (await fetch(url)).text(),'before');
+  await chat('no changes');assert.equal(rebuilds,0);
+  await chat('outside');assert.equal(rebuilds,1);
+  await chat('xml');assert.equal(rebuilds,2);
+  failNext=true;
+  await chat('mixed');assert.equal(rebuilds,3);
+  await chat('retry after build failure');assert.equal(rebuilds,4);
+  await chat('static again');assert.equal(rebuilds,4);
+  assert.equal(await fs.readFile(path.join(f.original,'public','style.css'),'utf8'),'before');
 });

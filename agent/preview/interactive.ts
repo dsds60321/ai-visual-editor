@@ -49,7 +49,7 @@ function injectInspector(hubOrigins:string[]){
   });
 }
 
-export async function openInteractivePreview(upstreamPort:number,hubOrigins:string[],isReady:()=>boolean,onSelection:(value:Selection)=>void){
+export async function openInteractivePreview(upstreamPort:number,hubOrigins:string[],isReady:()=>boolean,onSelection:(value:Selection)=>void,noCacheAssets=false){
   const inspector=await readFile(new URL('../inspector/inspector.js',import.meta.url));
   const hostname=`ave-${randomBytes(16).toString('hex')}.localhost`;
   const upstreamOrigin=`http://127.0.0.1:${upstreamPort}`;
@@ -89,6 +89,8 @@ export async function openInteractivePreview(upstreamPort:number,hubOrigins:stri
     headers['accept-encoding']='identity';
     const upstream=request({hostname:'127.0.0.1',port:upstreamPort,path:target,method,headers,agent:false},source=>{
       const output=forwardHeaders(source.headers);
+      if(noCacheAssets&&['style','script','image','font'].includes(destination||''))
+        output['cache-control']='no-store';
       const location=output.location;
       if(location){
         try{

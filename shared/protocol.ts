@@ -6,6 +6,8 @@ export const projectSchema = z.object({
   readyPath: z.string().regex(/^\/(?!\/)/).default('/'),
   previewPath: z.string().regex(/^\/(?!\/)[^\\\r\n]*$/).default('/'),
   environment: z.record(z.string(),z.string()).default({}), safePreview: z.literal(true),
+  staticPreviewDirs: z.array(z.string().regex(/^[\w.-]+(?:\/[\w.-]+)*$/).refine(value=>!value.split('/').some(part=>part==='.'||part==='..'))).default([]),
+  staticPreviewCacheMs: z.number().int().min(0).max(15000).default(0),
   exclude: z.array(z.string().regex(/^[\w.\/-]+$/)).default([])
 });
 export type Project = z.infer<typeof projectSchema>;
@@ -15,7 +17,8 @@ export const requestSchema = z.discriminatedUnion('method', [
   z.object({method:z.literal('projects'),params:z.object({})}),
   z.object({method:z.literal('models'),params:z.object({})}),
   z.object({method:z.literal('create'),params:z.object({projectId:z.string()})}),
-  ...(['status','diff','stop','discard','restart','start-preview','stop-preview','interactive-preview'] as const).map(method=>z.object({method:z.literal(method),params:z.object({taskId:z.string().uuid()})})),
+  z.object({method:z.literal('status'),params:z.object({taskId:z.string().uuid(),after:z.number().int().nonnegative().optional()})}),
+  ...(['diff','stop','discard','restart','start-preview','stop-preview','interactive-preview'] as const).map(method=>z.object({method:z.literal(method),params:z.object({taskId:z.string().uuid()})})),
   z.object({method:z.literal('chat'),params:z.object({taskId:z.string().uuid(),prompt:z.string().min(1).max(20000),selection:z.string().max(12000).optional(),model:z.string().trim().min(1).max(256).optional(),effort:z.string().trim().min(1).max(64).optional()})}),
   z.object({method:z.literal('request-diff'),params:z.object({taskId:z.string().uuid(),requestId:z.string().uuid()})}),
   z.object({method:z.literal('revert-request'),params:z.object({taskId:z.string().uuid(),requestId:z.string().uuid(),approved:z.literal(true)})}),

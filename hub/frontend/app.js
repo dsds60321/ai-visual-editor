@@ -23,7 +23,7 @@ themeSelect.onchange=()=>{
 };
 let seenInteractiveSelection,interactiveOrigin='';
 let previewInspectorReady=false,previewRecovering=false;
-let chatSubmitting=false;
+let chatSubmitting=false,lastReviewedRequestId;
 let requestDiff;
 const modelPicker=$('codex-model'),modelPreference='ave-codex-model';
 const effortPicker=$('codex-effort'),effortPreference='ave-codex-effort';
@@ -101,7 +101,28 @@ async function run(fn,previewMessage){
     pending=false;buttons();
   }
 }
-function buttons(){const live=task&&!['applied','discarded'].includes(task.state),running=task?.running||task?.busy;
+let eventStream,streamTaskId,lastRebuildSeq=0;
+function syncEventStream(){
+  const id=session?.connected&&task&&!['applied','discarded'].includes(task.state)?task.id:null;
+  if(id===streamTaskId)return;
+  eventStream?.close();
+  eventStream=undefined;streamTaskId=id;
+  if(!id||typeof EventSource==='undefined')return;
+  const stream=new EventSource('/api/tasks/'+id+'/events');
+  eventStream=stream;
+  stream.onopen=()=>void poll();
+  stream.onmessage=message=>{
+    if(eventStream!==stream||task?.id!==id)return;
+    let entry;
+    try{entry=JSON.parse(message.data);}catch{return;}
+    if(!entry||!Number.isSafeInteger(entry.seq)||entry.seq<=seen)return;
+    // Let the next status response fill any gap before rendering later fragments.
+    if(entry.seq!==seen+1){void poll();return;}
+    events([entry]);
+    if(entry.type==='request-diff')void poll();
+  };
+}
+function buttons(){syncEventStream();const live=task&&!['applied','discarded'].includes(task.state),running=task?.running||task?.busy;
   $('create').disabled=pending||!session?.connected||!$('project').value;
   $('project').disabled=pending||!projects?.length;
   for(const id of ['inspect','reload','navigate','restart'])$(id).disabled=pending||!live||!task.previewReady;
@@ -112,7 +133,7 @@ function buttons(){const live=task&&!['applied','discarded'].includes(task.state
   $('preview-power').disabled=pending||!session?.connected||!live||running;
   $('preview-power-label').textContent=live&&task.previewReady?'Preview 끄기':'Preview 켜기';
   $('send').disabled=pending||!session?.connected||!live||running;$('stop').disabled=pending||!running;
-  const progress=chatSubmitting?'Codex에 요청을 보내는 중입니다':task?.state==='rebuilding'?'Preview 재빌드 중':task?.running?'Codex 작업 중 · 다음 요청 작성 가능':'';
+  const progress=chatSubmitting?'Codex에 요청을 보내는 중입니다':task?.state==='rebuilding'?'Preview 재빌드 중':task?.state==='refreshing'?'Preview 리소스 갱신 중':task?.running?'Codex 작업 중 · 다음 요청 작성 가능':'';
   const message=$('chat-progress-text');
   if(message.textContent!==progress)message.textContent=progress;
   $('chat-progress').hidden=!progress;
@@ -136,7 +157,12 @@ function events(events){for(const e of events){
   if(e.seq<=seen)continue;seen=e.seq;
   if(e.type==='user'){append('user',e.text);deltaNode=null;continue;}
   if(e.type==='request-diff'){addRequestActions(e.requestId);deltaNode=null;continue;}
-  if(e.type==='delta'){if(!deltaNode)deltaNode=append('assistant','');deltaNode.textContent+=e.text;}
+  if(e.type==='delta'){
+    const chat=$('messages'),follow=chat.scrollHeight-chat.scrollTop-chat.clientHeight<24;
+    if(!deltaNode)deltaNode=append('assistant','');
+    deltaNode.textContent+=e.text;
+    if(follow)chat.scrollTop=chat.scrollHeight;
+  }
   else if(e.type==='error'||e.type==='approval'){append('error',e.text);}
   else if(e.type==='status'){ $('task-state').textContent=e.text;if(['completed','interrupted','failed'].includes(e.text))deltaNode=null;}
   if(e.type!=='delta')$('logs').textContent+=`[${e.type}] ${e.text}\n`;
@@ -203,7 +229,7 @@ async function showReadyPreview(){
   }
   loadPreview();
 }
-function showTaskState(){$('task-state').textContent={ready:'작업 준비 완료',editing:'Codex 작업 중',rebuilding:'Preview 재빌드 중',review:'검토 대기',applied:'원본 적용 완료',discarded:'폐기 완료'}[task.state]||task.state;}
+function showTaskState(){$('task-state').textContent={ready:'작업 준비 완료',editing:'Codex 작업 중',rebuilding:'Preview 재빌드 중',refreshing:'Preview 리소스 갱신 중',review:'검토 대기',applied:'원본 적용 완료',discarded:'폐기 완료'}[task.state]||task.state;}
 function selectInfo(info){
   const elements=Array.isArray(info?.elements)?info.elements:[];
   selection=elements.length?JSON.stringify(info,null,2):'';
@@ -282,7 +308,7 @@ $('restart').onclick=()=>previewAction('restart','빌드 및 Preview 재시작 �
 $('preview-power').onclick=()=>task.previewReady?previewAction('stop-preview','Preview를 껐습니다. 작업 사본은 유지됩니다.'):previewAction('start-preview','Preview를 켰습니다.','Preview 서버를 시작하는 중입니다');
 $('create').onclick=()=>run(async()=>{
   if(task&&!['applied','discarded'].includes(task.state))throw Error('현재 작업을 적용하거나 폐기한 뒤 새 작업을 시작하세요');
-  task=await api('/api/tasks',{projectId:$('project').value});restorePreviewPath();seen=0;lastRunning=task.running;lastVersion=-1;deltaNode=null;sessionStorage.setItem('ave-task-'+session.user,task.id);$('messages').replaceChildren();append('assistant','Preview에서 수정할 요소를 선택하거나 원하는 변경을 입력하세요. 기존 코드 구조를 유지하며 작업 사본만 수정합니다.');$('logs').textContent='';setInspection(false);selectInfo('');clearDiff();$('task-id').textContent=task.id.slice(0,8).toUpperCase();events(task.events);showTaskState();if(task.previewReady)await showReadyPreview();else{
+  task=await api('/api/tasks',{projectId:$('project').value});lastReviewedRequestId=task.requests?.at(-1)?.id;restorePreviewPath();seen=0;lastRebuildSeq=0;lastRunning=task.running;lastVersion=-1;deltaNode=null;sessionStorage.setItem('ave-task-'+session.user,task.id);$('messages').replaceChildren();append('assistant','Preview에서 수정할 요소를 선택하거나 원하는 변경을 입력하세요. 기존 코드 구조를 유지하며 작업 사본만 수정합니다.');$('logs').textContent='';setInspection(false);selectInfo('');clearDiff();$('task-id').textContent=task.id.slice(0,8).toUpperCase();events(task.events);showTaskState();if(task.previewReady)await showReadyPreview();else{
     hidePreview();
     const startupError=task.events.find(event=>event.type==='error');
     if(startupError){notice(startupError.text);$('logs-tab').click();}
@@ -297,8 +323,8 @@ $('chat-form').onsubmit=e=>{
   run(async()=>{
     try{
       const result=await action('chat',{prompt,selection:selection||$('manual-selection').value||undefined,model,effort});
-      if(!result.requestId)append('user',prompt);
-      deltaNode=null;task={...task,running:true,state:'editing'};lastRunning=true;
+      if(!result.requestId){append('user',prompt);deltaNode=null;}
+      task={...task,running:true,state:'editing'};lastRunning=true;
       showTaskState();
     }catch(error){
       input.value=input.value?draft+'\n\n'+input.value:draft;
@@ -477,13 +503,21 @@ async function poll(){if(polling||pending||document.hidden)return;polling=true;t
  }
  if(session.connected)void loadModels();
  if(task&&session.connected){
-   const currentTask=task,s=await api(`/api/tasks/${task.id}`);
+   const currentTask=task,s=await api(`/api/tasks/${task.id}${seen?'?after='+seen:''}`);
    if(pending||task!==currentTask||task.id!==s.id||(task.state==='discarded'&&s.state!=='discarded'))return;
    if(['applied','discarded'].includes(s.state)&&s.state!==task.state)clearDiff();
    const completed=lastRunning&&!s.running,previewChanged=task.previewReady!==s.previewReady;
    const wasRecovering=previewRecovering;
-   const rebuildFinished=s.state!=='rebuilding'&&(lastVersion>=0||task.state==='rebuilding')&&s.events.some(e=>e.seq>seen&&e.type==='status'&&e.text==='Preview 재빌드 완료');
+   const rebuildSeq=s.rebuildSeq??s.events.findLast(e=>e.type==='status'&&e.text==='Preview 재빌드 완료')?.seq??0;
+   const rebuildFinished=s.state!=='rebuilding'&&(lastVersion>=0||task.state==='rebuilding')&&rebuildSeq>lastRebuildSeq;
+   lastRebuildSeq=Math.max(lastRebuildSeq,rebuildSeq);
    events(s.events);task=s;showInteractiveSelection();lastRunning=s.running;
+   const reviewReady=!s.running&&!s.busy&&!['applied','discarded'].includes(s.state);
+   const request=s.requests?.at(-1);
+   const changedRequest=reviewReady&&request?.id!==lastReviewedRequestId&&request?.changed;
+   if(changedRequest&&s.previewReady&&previewRefreshLocked()){
+     setInspection(false);resetSelection();syncInspector();
+   }
    previewRecovering=s.state==='rebuilding'&&!s.previewReady;
    if(previewRecovering){
      $('preview-loading-text').textContent='Preview 서버를 다시 시작하는 중입니다';$('preview-loading').hidden=false;
@@ -496,15 +530,16 @@ async function poll(){if(polling||pending||document.hidden)return;polling=true;t
        else refreshPreview();
      }
    }
-   if(!s.running&&!s.busy&&!['applied','discarded'].includes(s.state)&&(completed||s.version!==lastVersion)){
-     const shouldReload=completed||lastVersion>=0;await refreshDiff();lastVersion=s.version;
-     if(shouldReload&&s.previewReady&&!previewChanged&&!wasRecovering&&!rebuildFinished)refreshPreview();
+   if(reviewReady&&(changedRequest||completed||s.version!==lastVersion)){
+     if((changedRequest||completed||lastVersion>=0)&&s.previewReady&&!previewChanged&&!wasRecovering&&!rebuildFinished)refreshPreview();
+     lastReviewedRequestId=request?.id;
+     await refreshDiff();lastVersion=s.version;
    }
    showTaskState();
  }
  }catch(e){notice(e.message);}finally{polling=false;buttons();}}
 document.addEventListener('visibilitychange',poll);
-(async()=>{try{session=await api('/api/session');$('username').textContent=session.user;const id=sessionStorage.getItem('ave-task-'+session.user);if(id){try{task=await api('/api/tasks/'+id);restorePreviewPath();$('task-id').textContent=id.slice(0,8).toUpperCase();lastVersion=-1;if(task.previewReady)await showReadyPreview();else hidePreview();}catch{sessionStorage.removeItem('ave-task-'+session.user);task=undefined;}}await poll();setInterval(poll,1200);}catch(e){notice(e.message);}})();
+(async()=>{try{session=await api('/api/session');$('username').textContent=session.user;const id=sessionStorage.getItem('ave-task-'+session.user);if(id){try{task=await api('/api/tasks/'+id);lastReviewedRequestId=task.requests?.at(-1)?.id;restorePreviewPath();$('task-id').textContent=id.slice(0,8).toUpperCase();lastVersion=-1;if(task.previewReady)await showReadyPreview();else hidePreview();}catch{sessionStorage.removeItem('ave-task-'+session.user);task=undefined;}}await poll();setInterval(poll,1200);}catch(e){notice(e.message);}})();
 if(window.require){require.config({paths:{vs:'/vs'}});require(['vs/editor/editor.main'],()=>{$('editor').replaceChildren();editor=monaco.editor.createDiffEditor($('editor'),{automaticLayout:true,readOnly:true,originalEditable:false,renderSideBySide:true,minimap:{enabled:false},fontSize:11,scrollBeyondLastLine:false,theme:'vs',renderIndicators:true});applyWorkspaceTheme(themeSelect.value);$('fallback').hidden=true;$('editor').hidden=false;showFile(diffData.changes.find(c=>c.file===activeFile));});}
 
 const workbench=$('workbench'),previewPanel=$('preview-panel'),previewResize=$('preview-resize'),reviewResize=$('review-resize');
