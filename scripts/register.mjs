@@ -10,7 +10,7 @@ const revision = project => createHash('sha256').update(JSON.stringify(project))
 
 export async function createRegistration(file){
  const token=randomBytes(32).toString('hex');let origin;
- const html=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>Local project registration</title><link rel="stylesheet" href="/style.css"><main><small>VISUAL EDITOR · LOCAL AGENT</small><h1>내 PC 프로젝트 등록</h1><p>이 화면은 본인 PC에서만 열립니다. 실행 명령은 Hub로 전송하지 않습니다.</p><label>저장된 프로젝트<select id="saved-projects" disabled><option value="">새 프로젝트 등록</option></select></label><form><label>프로젝트 ID<input name="id" required pattern="[a-z0-9-]+" placeholder="my-project"></label><label>이름<input name="name" required></label><label>절대 경로<input name="path" required placeholder="/Users/me/work/project"></label><button type="button" id="detect">프레임워크 탐지</button><output id="detected"></output><label>실행 방식<select name="runtime"><option value="command">등록 명령 실행 (macOS)</option><option value="static">정적 HTML</option></select></label><label>빌드 명령 (JSON 인자 배열)<input name="buildCommand" value='[]'></label><label>시작 명령 (JSON 인자 배열, Vite는 --base와 작업 경로 인자 사용)<input name="startCommand" value='["npm","run","dev"]'></label><label>포트<input name="port" type="number" min="1024" max="65535" value="18090" required></label><label>준비 확인 경로<input name="readyPath" value="/"></label><label>처음 열 Preview 경로<input name="previewPath" value="/"></label><label>Preview 경로 접두사<select name="pathPrefix"><option value="root">기본 ( / )</option><option value="task">작업 경로 (Vite base 설정 필요)</option></select></label><label>변경 후 갱신<select name="refresh"><option value="reload">화면 새로고침 (Node / Vite / 정적)</option><option value="restart">재빌드·재시작 (Java)</option></select></label><label>테스트 환경 변수 (JSON)<textarea name="environment">{}</textarea></label><label>제외 경로 (쉼표 구분)<input name="exclude" placeholder="uploads, config/private"></label><label class="check"><input type="checkbox" name="safePreview" required>운영 DB·API·메일·결제에 연결하지 않는 실행 설정임을 확인했습니다.</label><button type="submit">내 PC 설정에 저장</button></form><pre id="result" role="status"></pre></main><script src="/register.js"></script></html>`;
+ const html=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>WebStudio · 프로젝트 등록</title><link rel="stylesheet" href="/style.css"><main><small>WebStudio · LOCAL AGENT</small><h1>내 PC 프로젝트 등록</h1><p>이 화면은 본인 PC에서만 열립니다. 실행 명령은 Hub로 전송하지 않습니다.</p><label>저장된 프로젝트<select id="saved-projects" disabled><option value="">새 프로젝트 등록</option></select></label><form><label>프로젝트 ID<input name="id" required pattern="[a-z0-9-]+" placeholder="my-project"></label><label>이름<input name="name" required></label><label>절대 경로<input name="path" required placeholder="/Users/me/work/project"></label><button type="button" id="detect">프레임워크 탐지</button><output id="detected"></output><label>실행 방식<select name="runtime"><option value="command">등록 명령 실행 (macOS)</option><option value="static">정적 HTML</option></select></label><label>빌드 명령 (JSON 인자 배열)<input name="buildCommand" value='[]'></label><label>시작 명령 (JSON 인자 배열, Vite는 --base와 작업 경로 인자 사용)<input name="startCommand" value='["npm","run","dev"]'></label><label>포트<input name="port" type="number" min="1024" max="65535" value="18090" required></label><label>준비 확인 경로<input name="readyPath" value="/"></label><label>처음 열 Preview 경로<input name="previewPath" value="/"></label><label>Preview 경로 접두사<select name="pathPrefix"><option value="root">기본 ( / )</option><option value="task">작업 경로 (Vite base 설정 필요)</option></select></label><label>변경 후 갱신<select name="refresh"><option value="reload">화면 새로고침 (Node / Vite / 정적)</option><option value="restart">재빌드·재시작 (Java)</option></select></label><label>테스트 환경 변수 (JSON)<textarea name="environment">{}</textarea></label><label>제외 경로 (쉼표 구분)<input name="exclude" placeholder="uploads, config/private"></label><label class="check"><input type="checkbox" name="safePreview" required>운영 DB·API·메일·결제에 연결하지 않는 실행 설정임을 확인했습니다.</label><button type="submit">내 PC 설정에 저장</button></form><pre id="result" role="status"></pre></main><script src="/register.js"></script></html>`;
  const script=`const token=${JSON.stringify(token)};
 const form=document.querySelector('form'), result=document.querySelector('#result');
 const savedProjects=document.querySelector('#saved-projects'), submit=form.querySelector('[type=submit]');
@@ -76,7 +76,32 @@ form.onsubmit=async e=>{
 };
 listProjects().then(()=>savedProjects.disabled=false).catch(e=>result.textContent=e.message);
 `;
- const css='body{background:#f5f7f2;color:#243b30;font:14px sans-serif}main{max-width:620px;margin:40px auto;background:white;padding:32px;border:1px solid #dde5d9;border-radius:10px}small{color:#69816d}p{line-height:1.8;color:#778579}form{display:grid;gap:15px;margin-top:15px}label{display:grid;gap:7px}input,textarea,select{font:13px monospace;padding:9px;border:1px solid #ccd7c7;border-radius:4px}button{padding:11px;border:0;border-radius:4px;background:#1d7058;color:white;cursor:pointer}.check{display:flex;font-size:12px}pre{white-space:pre-wrap;color:#1d7058}output{font:12px monospace}';
+ const css=`
+ *{box-sizing:border-box}
+ body{margin:0;background:#fafafa;color:#171717;font:14px/1.6 sans-serif}
+ main{max-width:620px;margin:40px auto;padding:32px;background:#fff;border:1px solid #e5e5e5;border-radius:4px}
+ small{color:#737373;font-size:10px;letter-spacing:1.2px}
+ h1{margin:12px 0;font-size:24px;line-height:1.4;letter-spacing:-.6px;font-weight:600}
+ p{margin:0 0 28px;color:#666}
+ form{display:grid;gap:20px;margin-top:20px}
+ label{display:grid;gap:7px;font-size:12px;font-weight:500}
+ input,textarea,select{width:100%;min-width:0;padding:10px 12px;background:#fff;color:#171717;border:1px solid #d4d4d4;border-radius:3px;font:13px/1.5 monospace}
+ input::placeholder,textarea::placeholder{color:#858585}
+ input[readonly]{background:#f5f5f5}
+ textarea{min-height:76px;resize:vertical}
+ button{padding:11px 16px;border:1px solid #171717;border-radius:3px;background:#171717;color:#fff;font:inherit;cursor:pointer}
+ button:hover{background:#333}
+ #detect{justify-self:start;background:#fff;color:#404040;border-color:#d4d4d4;font-size:12px}
+ #detect:hover{background:#f5f5f5}
+ :is(input,textarea,select,button):focus-visible{outline:2px solid #171717;outline-offset:3px}
+ :is(button,select):disabled{background:#f5f5f5;color:#858585;border-color:#e5e5e5;cursor:not-allowed}
+ .check{display:flex;align-items:flex-start;gap:9px;color:#525252;font-size:12px;font-weight:400}
+ .check input{width:auto;margin:3px 0 0;padding:0;accent-color:#171717}
+ pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#404040;font-size:12px}
+ output{color:#666;font:12px/1.6 monospace;overflow-wrap:anywhere}
+ output:empty{display:none}
+ @media(max-width:660px){main{margin:16px;padding:24px}}
+ `;
  const server=createServer(async(req,res)=>{
   res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'");
   const json=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(data));};

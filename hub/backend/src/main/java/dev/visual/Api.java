@@ -20,25 +20,14 @@ public class Api {
 
     private final ConcurrentHashMap<String, Ownership> tasks = new ConcurrentHashMap<>();
     private final java.nio.file.Path state;
-    private final ObjectMapper mapper;
-
-    public Api(AgentBridge bridge, ObjectMapper mapper, @org.springframework.beans.factory.annotation.Value("${hub.data-dir:../../.data/hub}") String dataDir) throws Exception {
+    public Api(AgentBridge bridge, @org.springframework.beans.factory.annotation.Value("${hub.data-dir:../../.data/hub}") String dataDir) {
         this.bridge = bridge;
-        this.mapper = mapper;
         state = java.nio.file.Path.of(dataDir, "tasks.json");
-        java.nio.file.Files.createDirectories(state.toAbsolutePath().getParent());
-        if (java.nio.file.Files.exists(state))
-            tasks.putAll(mapper.readValue(java.nio.file.Files.readString(state), mapper.getTypeFactory().constructMapType(Map.class, String.class, Ownership.class)));
     }
 
-    private synchronized void save() throws Exception {
-        var temp = state.resolveSibling("tasks-" + UUID.randomUUID() + ".tmp");
-        java.nio.file.Files.writeString(temp, mapper.writeValueAsString(tasks));
-        try {
-            java.nio.file.Files.setPosixFilePermissions(temp, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
-        } catch (UnsupportedOperationException ignored) {
-        }
-        java.nio.file.Files.move(temp, state, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+    @jakarta.annotation.PreDestroy
+    void deleteLegacyTaskState() throws java.io.IOException {
+        java.nio.file.Files.deleteIfExists(state);
     }
 
     @GetMapping("/api/session")
@@ -61,7 +50,6 @@ public class Api {
     public Object create(Principal user, @RequestBody JsonNode body) throws Exception {
         var task = bridge.call(user.getName(), "create", Map.of("projectId", body.path("projectId").asText()));
         tasks.putIfAbsent(task.path("id").asText(), new Ownership(user.getName(), task.path("previewBase").asText().substring(task.path("previewBase").asText().lastIndexOf('/') + 1)));
-        save();
         return task;
     }
 
@@ -79,15 +67,12 @@ public class Api {
     @PostMapping("/api/tasks/{id}/{action}")
     public Object action(Principal user, @PathVariable String id, @PathVariable String action, @RequestBody Map<String, Object> body) throws Exception {
         own(id, user);
-        if (!Set.of("chat", "diff", "apply", "stop", "discard", "restart", "restore", "start-preview", "stop-preview", "interactive-preview").contains(action))
+        if (!Set.of("chat", "diff", "apply", "stop", "discard", "restart", "start-preview", "stop-preview", "interactive-preview", "request-diff", "revert-request").contains(action))
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         var params = new HashMap<>(body);
         params.put("taskId", id);
         var result = bridge.call(user.getName(), action, params);
-        if (Set.of("apply", "discard", "restore").contains(action)) {
-            tasks.put(id, new Ownership(user.getName(), ""));
-            save();
-        }
+        if (Set.of("apply", "discard").contains(action)) tasks.put(id, new Ownership(user.getName(), ""));
         return result;
     }
 

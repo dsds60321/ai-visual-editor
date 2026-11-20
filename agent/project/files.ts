@@ -1,9 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-export const excluded = new Set(['.ave-apply-lock','.ave-runtime','.git','node_modules','target','dist','build','.next','.nuxt','.gradle','.idea','.aws','.ssh','.codex','.agents','coverage','.DS_Store','.ave-runtime']);
+export const excluded = new Set(['.ave-apply-lock','.ave-runtime','.git','node_modules','target','dist','build','.next','.nuxt','.gradle','.idea','.aws','.ssh','.codex','.codex-notes','.agents','coverage','.DS_Store']);
 export function allowed(rel:string, extra:string[] = []) {
   const parts = rel.split(/[\\/]/);
+  if (/^codex[-_](?:chat|conversation|notes|session)(?:[-_].+)?\.md$/i.test(parts.at(-1)!)) return false;
   return !parts.some(p=>excluded.has(p) || /^(?:application.*\.(?:properties|ya?ml)|\.npmrc|\.netrc|settings\.xml)$/i.test(p) || /^\.env(?:\.|$)/i.test(p) || /(?:credentials|secrets?|auth\.json|id_rsa|\.pem$|\.key$|\.p12$|\.jks$)/i.test(p)) && !extra.some(p=>rel===p||rel.startsWith(p+'/'));
 }
 export const hash = (data:Buffer|string) => createHash('sha256').update(data).digest('hex');
@@ -20,7 +21,7 @@ export async function safePath(root:string,rel:string) {
   return current;
 }
 export async function inventory(root:string,extra:string[]=[]):Promise<Record<string,string>> {
-  const result:Record<string,string>={};
+  const result:Record<string,string>=Object.create(null);
   async function walk(dir:string, prefix='') {
     for(const entry of await fs.readdir(dir,{withFileTypes:true})) {
       const rel=prefix+entry.name;

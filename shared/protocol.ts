@@ -16,9 +16,10 @@ export const requestSchema = z.discriminatedUnion('method', [
   z.object({method:z.literal('models'),params:z.object({})}),
   z.object({method:z.literal('create'),params:z.object({projectId:z.string()})}),
   ...(['status','diff','stop','discard','restart','start-preview','stop-preview','interactive-preview'] as const).map(method=>z.object({method:z.literal(method),params:z.object({taskId:z.string().uuid()})})),
-  z.object({method:z.literal('chat'),params:z.object({taskId:z.string().uuid(),prompt:z.string().min(1).max(20000),selection:z.string().max(12000).optional(),model:z.string().trim().min(1).max(256).optional()})}),
+  z.object({method:z.literal('chat'),params:z.object({taskId:z.string().uuid(),prompt:z.string().min(1).max(20000),selection:z.string().max(12000).optional(),model:z.string().trim().min(1).max(256).optional(),effort:z.string().trim().min(1).max(64).optional()})}),
+  z.object({method:z.literal('request-diff'),params:z.object({taskId:z.string().uuid(),requestId:z.string().uuid()})}),
+  z.object({method:z.literal('revert-request'),params:z.object({taskId:z.string().uuid(),requestId:z.string().uuid(),approved:z.literal(true)})}),
   z.object({method:z.literal('apply'),params:z.object({taskId:z.string().uuid(),revision:z.string().length(64),files:z.array(z.string()).min(1),approved:z.literal(true)})}),
-  z.object({method:z.literal('restore'),params:z.object({taskId:z.string().uuid(),approved:z.literal(true)})}),
   z.object({method:z.literal('preview'),params:z.object({taskId:z.string().uuid(),path:z.string().startsWith('/').max(4096)})})
 ]);
 export function redact(value: string) { return value.replace(/(bearer\s+)[\w.\-]+/gi,'$1[REDACTED]').replace(/((?:password|token|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+/gi,'$1[REDACTED]'); }

@@ -1,11 +1,40 @@
+# Dependencies and build output
 node_modules/
 dist/
 target/
+build/
+out/
+.gradle/
+.cache/
+*.tsbuildinfo
+/hub/backend/src/main/resources/static/
+
+# Local settings and runtime files
 .data/
 agent.config.json
+agent.config.local.json
 .env
+.env.*
+!.env.example
+.codex/
+.codex-notes/
+codex-chat.md
+codex-chat-*.md
+codex-notes.md
+codex-notes-*.md
+*.pid
+*.log
+*.hprof
+.DS_Store
+
+# Tests and local documentation
+coverage/
 playwright-report/
 test-results/
-*.log
+/docs/
 
-hub/backend/src/main/resources/static/
+# Keep the IntelliJ module and its indexing exclusions for the team.
+**/.idea/*
+*.iml
+!/.idea/modules.xml
+!/.idea/ai-visual-editor.iml

@@ -1,170 +1,159 @@
-# AI Visual Editor
+# WebStudio
 
-기존 웹 프로젝트를 분리된 사본에서 수정하고, Preview와 Diff를 검토한 뒤 선택한 파일만 원본에 반영하는 독립형 개발 도구입니다. 원본에 SDK·Controller·Inspector 소스를 설치하지 않습니다. Git commit/merge/push, SQL 실행, 배포 기능은 없습니다.
+WebStudio는 이미 만들어진 웹 프로젝트를 브라우저에서 보면서 수정하는 로컬 개발 도구입니다. 바꾸고 싶은 버튼이나 영역을 Preview에서 고른 다음, Codex에 원하는 동작을 설명할 수 있습니다. 수정된 화면을 다시 열어 보고, 코드 차이까지 확인한 뒤 필요한 파일만 원본에 반영합니다.
 
-> 현재는 macOS에서 검증하는 로컬 MVP입니다. 사내 공용 서비스 배포가 완료된 제품은 아닙니다. 검증 범위와 미구현 사항은 [검증 기록](docs/validation.md)과 [보안·복구 가이드](docs/security.md)를 확인하세요.
+예를 들어 관리자 화면의 검색 폼을 바꾸고 싶다면, 코드를 찾기 전에 Preview에서 폼을 선택하고 “검색 조건은 유지하고 버튼을 오른쪽에 배치해 줘”라고 요청할 수 있습니다. Codex는 작업 사본에서 수정합니다. 결과가 마음에 들면 적용하고, 다시 시도하고 싶으면 작업 사본의 변경을 되돌리면 됩니다.
 
-## 구성
+## 주요 기능
 
-```text
-hub/backend/       Java 21 / Spring Boot 3.5 / Spring Security / WebSocket
-hub/frontend/      Vanilla JS / Monaco Diff / Preview·채팅 패널
-agent/project/     등록 설정, 탐지, 실제 파일 스냅샷, 작업 수명주기
-agent/runtime/     정적 서버, 등록 명령 실행, macOS Sandbox, Java JAR 실행본
-agent/preview/     인증된 Hub 중계용 HTTP 응답, 임시 Inspector 주입
-agent/inspector/   클릭·드래그 선택, 값 없는 DOM 구조 수집
-agent/codex/       Codex App Server stdio / 작업별 대화 / 정지
-agent/diff/        UTF-8 파일 Diff, SQL 변경 주의 표시
-agent/apply/       원본 해시 검사, 프로젝트 잠금, 백업·교체·복구
-shared/            Agent 명령·프로젝트 설정 스키마
-examples/          Express/EJS, React/Vite, Spring/Thymeleaf
-scripts/           설정 생성, 로컬 등록 화면, 웹 자산 빌드
+| 기능 | 할 수 있는 일 |
+| --- | --- |
+| 프로젝트 등록 | 로컬 폴더, 빌드·시작 명령, 포트, 첫 화면 경로를 등록합니다. 기존 설정은 등록 화면에서 다시 불러와 수정할 수 있습니다. |
+| Preview | 현재 파일 상태로 만든 사본에서 사이트를 실행합니다. 작업은 유지한 채 서버만 끄거나 다시 켤 수 있습니다. 지원되는 로컬 프로젝트에서는 로그인, 폼 제출, AJAX 동작도 확인할 수 있습니다. |
+| 화면 요소 선택 | 클릭하거나 드래그해서 선택한 요소의 구조를 채팅에 첨부합니다. Inspector가 수집하는 정보는 태그, 구조 기반 selector, 화면 위치 등입니다. |
+| Codex 채팅 | 같은 작업에서 후속 요청을 이어가거나 진행 중인 요청을 중지할 수 있습니다. CLI가 제공하는 모델과 추론 강도를 선택할 수 있습니다. |
+| 변경 검토 | Monaco에서 작업 전체의 Code Diff와 SQL 관련 변경을 확인합니다. 채팅에서는 요청별로 바뀐 내용을 볼 수 있고, 가장 최근에 변경을 만든 요청부터 작업 사본에서 되돌릴 수 있습니다. 요청이 끝나면 바뀐 파일의 전후 내용과 충돌 확인용 해시만 보관합니다. |
+| 확정 적용 | 검토한 파일을 골라 원본에 적용합니다. 적용에 성공하면 작업 사본을 폐기하며, 현재 페이지에서 적용을 되돌릴 수 없습니다. |
+
+## 작업 흐름
+
+```mermaid
+flowchart LR
+    A["프로젝트 선택"] --> B["현재 파일을 작업 사본으로 복사"]
+    B --> C["Preview에서 요소 선택"]
+    C --> D["Codex에 수정 요청"]
+    D --> E["Preview와 Diff 확인"]
+    E -->|추가 수정| D
+    E -->|선택한 파일 승인| F["충돌 확인 · 원본 반영 · 작업 폐기"]
+    E -->|폐기| G["작업 사본 삭제"]
 ```
 
-Hub는 소스 파일 경로나 실행 명령을 선택하지 않습니다. 사용자는 본인 PC에서 프로젝트와 명령을 등록합니다. Hub는 인증된 개발자의 Agent로 제한된 작업 명령만 전달합니다. 모든 프로젝트 파일 접근과 Codex 실행은 Agent에서 수행합니다.
+작업 시작 시점의 디스크 상태를 기준으로 사본을 만듭니다. Git에 아직 커밋하지 않은 변경도 포함됩니다. 원본에 쓰는 시점은 **선택 파일 적용하기 → 확정 적용하기**을 눌렀을 때입니다. 작업 시작 뒤 원본이 바뀌었거나 검토한 Diff가 최신 상태와 다르면 적용을 중단합니다.
 
-## 준비
+확정 적용에 성공하면 작업 사본, 미반영 변경, 요청별 Diff, 백업을 함께 폐기합니다. 채팅의 **이 요청 되돌리기**는 확정 전 작업 사본에서 사용할 수 있습니다.
 
-- Java 21, Maven 3.9+, Node.js 22 또는 24 LTS, npm
-- macOS의 `/usr/bin/sandbox-exec`: 명령형 Preview의 외부 쓰기 차단에 사용합니다.
-- 로컬에 설치하고 로그인한 Codex CLI. 개발 검증 버전은 `0.169.0`입니다.
-- Chrome. 브라우저 테스트는 격리된 임시 Chrome 프로필을 사용합니다.
+Hub 또는 Agent를 정상 종료하면 이 Agent의 작업 사본과 임시 데이터가 정리됩니다. 정상 종료하면 적용하지 않은 작업도 없어지므로 필요한 변경은 먼저 확정하세요. 사용자 설정과 Hub 실행 파일은 다음 실행을 위해 유지합니다. 적용 실패 후 수동 복구가 필요한 백업은 보존합니다.
 
-Codex CLI가 없다면 공식 [설치 안내](https://developers.openai.com/codex/cli)를 따르세요.
+## 아키텍처
+
+```mermaid
+flowchart LR
+    UI["브라우저 · Preview / 채팅 / Monaco Diff"]
+
+    subgraph Local["개발자 PC"]
+        Hub["Hub · Spring Boot"]
+        Agent["Agent · Node.js / TypeScript"]
+        Codex["Codex App Server"]
+        Work["기준 사본과 작업 사본"]
+        Preview["Preview 서버"]
+        Original["원본 프로젝트"]
+    end
+
+    UI <-->|"HTTP API · 상태 조회"| Hub
+    Hub <-->|"WebSocket · 작업 명령과 결과"| Agent
+    Agent <-->|"stdio · 요청과 작업 이벤트"| Codex
+    Codex -->|"작업 사본 수정"| Work
+    Agent -->|"시작 · 중지 · 재시작"| Preview
+    Preview -->|"작업 사본에서 실행"| Work
+    Agent -->|"원본 읽기 · 승인 후 반영"| Original
+    Agent -->|"스냅샷 · Diff · 백업 관리"| Work
+    UI -->|"상호작용 Preview · 로컬 프록시"| Agent
+    Agent -->|"일반 Preview 응답"| Hub
+```
+
+**Hub**는 웹 UI를 제공하고 브라우저의 요청을 Agent에 전달합니다. **Agent**는 등록된 로컬 프로젝트를 읽고, 사본을 만들고, Preview와 Codex를 실행합니다. 파일 비교와 적용도 Agent에서 처리합니다. Preview에 필요한 Inspector는 응답에 임시로 넣기 때문에 기존 프로젝트에 설치할 코드가 없습니다.
+
+일반 Preview는 Hub를 거치는 읽기용 화면입니다. 로그인이나 폼 제출이 필요한 경우, 지원되는 명령형 프로젝트는 Agent의 별도 로컬 주소에서 상호작용 Preview를 엽니다. Inspector는 선택한 요소의 구조를 수집하며, 폼 입력값이나 세션 쿠키는 선택 정보에 포함하지 않습니다.
+
+| 경로 | 역할 |
+| --- | --- |
+| `hub/backend/`, `hub/frontend/` | Spring Boot API와 WebSocket 연결, Vanilla JS 작업 화면과 Monaco Diff |
+| `agent/project/`, `agent/runtime/` | 등록 설정, 작업 사본, 요청별 스냅샷, Preview 서버 실행 |
+| `agent/preview/`, `agent/inspector/` | Preview 중계와 DOM 선택 |
+| `agent/codex/` | Codex App Server 연결과 대화 상태 |
+| `agent/diff/`, `agent/apply/` | 변경 비교, 충돌 검사, 백업과 복구 |
+| `shared/`, `scripts/`, `tests/fixtures/` | 통신 스키마, 로컬 설정과 등록 도구, 브라우저 테스트용 프로젝트 |
+
+## 로컬에서 실행하기
+
+Java 21, Maven 3.9+, Node.js 22 또는 24 LTS와 npm이 필요합니다. Codex에 수정을 요청하려면 [Codex CLI를 설치](https://developers.openai.com/codex/cli)하고 본인 계정으로 로그인합니다. 명령형 Preview는 macOS의 `/usr/bin/sandbox-exec`를 사용합니다.
+
+저장소 루트에서 시작합니다.
 
 ```sh
-codex --version
-codex login
-codex login status
 npm ci
 npm run build
-```
-
-개인 ChatGPT/Codex 계정을 사용합니다. 별도 OpenAI API 키를 요구하지 않습니다. CLI 버전별 App Server 프로토콜 차이가 있을 수 있습니다. [App Server 공식 문서](https://developers.openai.com/codex/app-server)와 설치 버전의 `codex app-server generate-json-schema --out /tmp/codex-schema`로 확인하세요.
-
-## 최초 설정과 실행
-
-저장소 루트에서 한 번 실행합니다.
-
-```sh
 npm run setup
+codex login
 ```
 
-`.data/users.json`에 로컬 사용자 이름과 Agent 연결용 토큰을, `agent.config.json`에 PC 설정을 생성합니다. 기본 사용자 이름은 `developer`입니다. 두 파일은 Git에서 제외되며 기존 설정은 덮어쓰지 않습니다. 예제 프로젝트 세 개가 등록됩니다. 기존 설정 파일이 둘 다 있으면 그대로 사용하세요. 여러 사용자가 등록된 이전 설정에서는 Hub가 첫 번째 사용자로 열립니다.
+`npm run setup`은 최초 한 번 실행합니다. Hub 사용자와 Agent 연결 토큰을 `.data/users.json`에 저장하고, 프로젝트 목록이 비어 있는 `agent.config.json`을 만듭니다. 기존 설정이 있다면 그대로 사용하면 됩니다.
 
-### IntelliJ IDEA에서 실행
+IntelliJ IDEA에서는 `hub/backend/pom.xml`을 Maven 프로젝트로 추가하고 SDK를 Java 21로 지정한 뒤, 저장소의 **Hub**, **Agent** 실행 구성을 차례대로 시작합니다. Hub 실행 구성이 모듈을 찾지 못하면 클래스패스 모듈을 `hub/backend`의 Maven 모듈로 지정합니다.
 
-1. 저장소 루트를 열고 `hub/backend/pom.xml`을 우클릭해 **Add as Maven Project**를 선택합니다. **Project Structure → Project SDK**에서 Java 21을 지정합니다.
-2. 프로젝트 루트에서 `npm run build`를 실행해 Agent와 웹 자산을 준비합니다. `agent/`나 `hub/frontend/`를 수정했다면 다시 실행합니다.
-3. 실행 구성에서 **Hub**를 실행합니다. Maven 모듈 이름이 다르게 표시되면 **Run → Edit Configurations → Hub**에서 `hub/backend`의 Maven 모듈을 클래스패스로 선택합니다.
-4. 실행 구성에서 **Agent**를 실행합니다. 이 구성은 IntelliJ의 npm 지원과 프로젝트 Node.js 인터프리터를 사용합니다. `package.json`의 `agent` 옆 실행 버튼이나 터미널의 `npm run agent`로도 실행할 수 있습니다.
-5. [로컬 Hub](http://127.0.0.1:8080)를 엽니다.
-
-### 터미널에서 실행
-
-Hub 빌드:
+터미널에서는 Hub와 Agent를 각각 실행합니다. Hub JAR은 실행 중 다시 빌드해도 영향을 받지 않도록 별도 위치에 복사합니다.
 
 ```sh
+# 터미널 1 · 저장소 루트에서 시작
 mvn -f hub/backend/pom.xml package
-```
-
-터미널 1: **Hub는 backend 디렉터리에서 실행**합니다. 실행 중인 JAR을 빌드로 덮어쓰지 않도록 실행본을 분리합니다. 실행본을 다시 복사하기 전에는 Hub를 종료하세요.
-
-```sh
 cd hub/backend
 mkdir -p ../../.data
 cp target/visual-editor-hub-0.1.0.jar ../../.data/hub.jar
 java -jar ../../.data/hub.jar
 ```
 
-터미널 2: 저장소 루트에서 Agent를 실행합니다.
-
 ```sh
+# 터미널 2 · 저장소 루트에서 실행
 npm run agent
-# 별도 설정 파일:
-npm run agent -- /absolute/path/agent.config.json
 ```
 
-[로컬 Hub](http://127.0.0.1:8080)에 접속하면 작업 화면이 바로 열립니다. Hub는 로컬 전용이며 같은 PC에서 접속할 수 있는 사용자는 작업 화면에 접근할 수 있습니다. Codex 수정에는 별도의 Codex CLI 로그인이 필요합니다.
+[http://127.0.0.1:8080](http://127.0.0.1:8080)을 열고 프로젝트를 선택합니다. Hub 화면은 같은 PC에서 바로 열리며, Codex 사용에는 CLI 로그인이 필요합니다.
 
-`HUB_PORT`, `HUB_USERS_FILE`, `HUB_DATA_DIR` 환경 변수로 Hub 포트와 저장 위치를 바꿀 수 있습니다. 기본 파일 경로는 backend 디렉터리 기준입니다. 다른 디렉터리에서 Hub를 실행하면 두 파일 경로를 절대 경로로 지정하세요.
+## 내 프로젝트 등록하기
 
-## 기존 프로젝트 등록
+저장소 루트에서 `npm run register`를 실행하고 터미널에 출력된 주소를 엽니다. 프로젝트 이름, 절대 경로, 실행 명령과 Preview 포트를 입력합니다. 로그인 페이지부터 확인하려면 **처음 열 Preview 경로**에 해당 경로를 입력합니다. 기존 항목을 편집하려면 **저장된 프로젝트**에서 선택합니다. 저장한 뒤 Agent를 재시작하면 작업 화면에 반영됩니다.
 
-Agent를 종료한 뒤 로컬 등록 화면을 엽니다.
-
-```sh
-npm run register
-# 출력되는 127.0.0.1의 임시 포트 주소를 본인 PC 브라우저에서 엽니다.
-```
-
-이름·절대 경로·프레임워크 탐지·빌드/시작 인자 배열·Preview 포트·준비 경로·테스트 환경 변수·제외 경로·갱신 방식을 입력합니다. 기존 등록을 수정하려면 **저장된 프로젝트**에서 이름을 선택하고 **변경사항 저장**을 누릅니다. 운영 연결이 없는 환경임을 확인한 뒤 저장하고 `npm run agent`로 다시 연결합니다. 등록 화면은 다른 Origin의 요청, 토큰 없는 저장, DNS rebinding용 Host를 거부합니다.
-
-또는 `agent.config.json`의 `projects`를 편집합니다.
+`agent.config.json`의 `projects` 배열을 직접 편집해도 됩니다. 작업 화면에서 예제만 빼려면 해당 등록 항목을 배열에서 제거하면 됩니다.
 
 ```json
 {
   "id": "my-project",
-  "name": "MY_PROJECT",
-  "path": "/Users/me/work/MY_PROJECT",
+  "name": "관리자사이트",
+  "path": "/Users/me/work/my-project",
   "runtime": "command",
-  "pathPrefix": "root",
-  "refresh": "reload",
   "buildCommand": ["npm", "ci", "--ignore-scripts"],
   "startCommand": ["node", "server.mjs"],
   "port": 18090,
   "readyPath": "/",
-  "environment": {"APP_ENV": "preview"},
+  "previewPath": "/login",
+  "refresh": "reload",
+  "environment": { "APP_ENV": "preview" },
   "safePreview": true,
   "exclude": ["uploads", "config/private"]
 }
 ```
 
-- `runtime: static`은 작업본 루트의 `index.html`을 제공합니다. 빌드·시작 명령은 실행하지 않습니다.
-- `runtime: command`는 등록한 배열을 셸 없이 실행합니다. `&&`, 파이프, `$VAR` 같은 셸 문법은 자동 해석하지 않습니다. Windows/Linux 명령형 실행은 격리 어댑터가 준비되지 않아 차단합니다.
-- `PORT`, `HOST=127.0.0.1`, `AVE_PREVIEW_BASE`를 제공하지만 모든 서버가 이 값을 사용하는 것은 아닙니다. 실제 명령에도 필요한 포트/주소 옵션을 등록하세요. `safePreview` 확인은 운영 안전성을 자동 증명하지 않습니다.
-- `refresh: reload`는 변경 후 페이지를 갱신합니다. `restart`는 Codex 완료 후 재빌드·재시작합니다. 빌드 실패 시 기존 프로세스를 유지합니다. 수동 재시작 버튼도 있습니다.
-- Vite 예제는 `pathPrefix: task`와 `base: process.env.AVE_PREVIEW_BASE || '/'`를 함께 사용합니다. 자신의 기존 프로젝트에 설정 코드를 추가하지 않으려면 시작 명령 인자에 `"--base", "${AVE_PREVIEW_BASE}"`를 등록하세요. Agent가 이 정확한 인자만 현재 작업 경로로 치환합니다. 셸 변수나 일반 표현식은 평가하지 않습니다. 자동 탐지는 명령을 추측하거나 실행하지 않습니다.
-- Spring 예제의 실행 명령은 `java -jar ... --server.address=127.0.0.1 --server.port=...`입니다. 실행 JAR을 작업 전용 위치로 복사해 재빌드 중 기존 JAR을 보존합니다.
-- 정적·명령형 서버 모두 원본 대신 스냅샷에서 실행합니다. `node_modules`와 빌드 출력은 복사하지 않으므로 처음 실행할 때 의존성 설치가 필요합니다. 네트워크가 없는 환경에서는 별도 캐시/사내 저장소 설정이 필요합니다.
+- 정적 HTML은 `runtime`을 `static`으로 지정합니다. Agent가 작업 사본의 `index.html`을 제공합니다.
+- 명령형 프로젝트의 빌드·시작 명령은 인자 배열로 등록합니다. 필요하면 테스트용 DB와 API 주소도 환경 변수에 지정하고, 운영 서비스에 연결되지 않는지 확인하세요.
+- Vite처럼 Preview 접두사가 필요한 경우 `pathPrefix`를 `task`로 설정하고 시작 명령에 `"--base", "${AVE_PREVIEW_BASE}"`를 사용합니다.
+- 대화 메모는 `.codex-notes/`에 두거나 `codex-chat.md`, `codex-notes.md`처럼 이름을 붙이면 작업 사본과 변경 목록에서 자동으로 제외됩니다. 다른 이름의 파일은 등록 화면의 **제외 경로**에 프로젝트 기준 상대 경로를 추가하세요.
+- Spring처럼 변경 후 다시 빌드해야 하는 경우 `refresh`를 `restart`로 설정합니다.
 
-## 사용 흐름
+기본 Agent 설정 이외의 파일은 `npm run agent -- /absolute/path/agent.config.json`으로 지정할 수 있습니다. Hub 설정은 `HUB_PORT`, `HUB_USERS_FILE`, `HUB_DATA_DIR` 환경 변수로 변경합니다. Hub를 `hub/backend` 외의 디렉터리에서 실행한다면 두 저장 경로를 절대 경로로 지정하세요.
 
-1. 프로젝트 선택 → **새 작업 시작**. 현재 디스크 상태를 사본으로 만들므로 미커밋 변경도 포함됩니다.
-2. Preview의 경로를 선택하고 **요소 선택**으로 클릭/드래그합니다. ESC는 선택을 해제합니다.
-   **Preview 끄기 / 켜기**로 같은 작업 사본의 서버를 중지하거나 다시 시작할 수 있습니다. 같은 프로젝트의 활성 작업을 다른 탭에서 열려면 해당 프로젝트에서 **새 작업 시작**을 누릅니다.
-   지원되는 로컬 명령형 프로젝트에서는 Preview에서 바로 로그인하고 폼·AJAX 동작을 확인할 수 있습니다. Preview 오른쪽 경계를 드래그하면 너비를, Diff·실행 로그 위쪽 경계를 드래그하면 높이를 조절할 수 있습니다.
-3. Codex 채팅으로 수정 요청을 보냅니다. 추가 요청은 같은 App Server 스레드를 사용합니다. **작업 정지**는 turn interrupt를 요청합니다.
-4. 작업 종료 후 Preview와 Diff를 확인합니다. Code/SQL/로그 탭, 패널 크기 조절, Preview·Diff 최대화를 제공합니다.
-5. 파일 체크박스로 적용 대상을 선택하고 **선택 파일 적용하기 → 승인하고 적용**합니다. 검토한 리비전이 바뀌었거나 원본에 충돌이 있으면 중단합니다.
-6. **이전 적용 복구**는 백업 상태로 되돌립니다. 적용 후 원본이 다시 바뀌었으면 복구도 중단합니다.
-7. **작업 폐기**는 작업 사본만 삭제합니다.
+## 검증과 지원 범위
 
-Inspector는 DOM의 태그·위치·구조·구조 기반 selector·data 속성 **이름**만 수집합니다. 입력값, 텍스트, ID/class/data 값, 쿼리 문자열, 쿠키를 보내지 않습니다. 이 때문에 소스 탐색에 추가 설명이 필요할 수 있습니다. CSP를 강제로 해제하지 않으며, 선택 기능이 막히면 별도 Preview 탭과 수동 요소 입력을 사용합니다.
-
-## 검증 명령
+Express/EJS 예제로 실제 Codex 수정부터 Preview 갱신, Diff 검토, 원본 적용까지 확인했습니다. React/Vite와 Spring/Thymeleaf는 실제 서버에서 렌더링하고, 요소를 선택한 뒤 작업을 폐기하는 흐름을 확인했습니다.
 
 ```sh
-npm run build
-npm run check
 npm test
 mvn -f hub/backend/pom.xml test
 
-# Hub와 Agent를 실행한 뒤
+# Hub와 예제가 등록된 Agent를 실행한 뒤
 npm run test:e2e
-# 실제 개인 Codex 사용량을 사용하는 전체 수정·적용·복구 테스트
 AVE_LIVE_CODEX=1 npm run test:e2e -- tests/workflow.spec.ts
 ```
 
-테스트는 Express 예제 파일을 실제로 적용하고 복구합니다. 작업 전 예제 원본을 별도로 수정하지 마세요. 비정상 종료 시 작업 디렉터리의 백업과 적용 기록을 확인하세요. Chrome이 없으면 `npx playwright install chromium` 후 설정의 Chrome channel을 조정해야 합니다.
+브라우저 테스트는 기본으로 Chrome을 사용합니다. 예제가 필요한 테스트는 새 테스트 설정을 만들 때 `npm run setup -- --with-demos`로 예제 등록을 포함할 수 있습니다. 실제 Codex 테스트는 개인 계정의 사용량을 쓰고 Express 테스트 파일을 적용한 뒤 테스트에서 원래 내용으로 되돌립니다. 실행 전 해당 예제의 원본에 별도 변경이 없는지 확인하세요.
 
-## 범위와 다음 단계
-
-최우선은 검증된 단일 프로젝트 수정 흐름입니다. 이후 우선순위는 다음과 같습니다.
-
-1. Windows/Linux 실행·파일 접근 격리, 더 엄격한 읽기 제한과 외부 효과 차단.
-2. 작업·채팅 영속화 및 Agent 재시작 후 재개, 적용 중 프로세스 종료에 대한 자동 복구.
-3. 프레임워크별 HMR WebSocket·인증·동적 URL 프록시, 외부 Tomcat/JSP 어댑터.
-4. SQL dialect별 파서와 보수적 위험 분석, 사내 SSO·운영 감사/보존 정책.
-
-Monaco는 파일 단위 적용을 제공합니다. Hunk 적용·SQL DB 실행·공개 초대·모바일·VPN·확장 프로그램·데스크톱 패키징·배포 연동은 구현하지 않습니다. 서버 렌더링 UI를 위해 Thymeleaf를 Hub에 넣을 필요가 없어 정적 UI를 사용하며, 예제 Spring 프로젝트에는 Thymeleaf를 사용합니다. SSE 대신 인증된 WebSocket RPC와 짧은 상태 폴링으로 채팅 이벤트를 전달합니다.
+현재 명령형 Preview는 macOS를 지원합니다. 상호작용 Preview는 실행 중인 로컬 명령형 프로젝트 중 `pathPrefix`가 `root`인 경우에 열 수 있으며, 사이트의 CSP나 프레임 정책에 따라 요소 선택이나 화면 삽입이 제한될 수 있습니다. 파일 적용은 파일 단위로 제공하며, SQL 변경은 검토 대상으로 표시됩니다. 적용 실패로 백업이 남았다면 Agent 로그에 나온 작업 경로에서 `apply.json`과 `backup/`을 확인하세요. 현재 파일이 적용 직후 해시와 일치할 때만 백업으로 복구하고, 그 이후에 바뀐 파일은 수동으로 병합하세요.

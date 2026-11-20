@@ -64,8 +64,7 @@ for(const interactive of [false,true]){
     await page.getByRole('button',{name:'선택 해제'}).click();
     await expect(page.locator('#selection-card')).toBeHidden();
     await expect(page.getByRole('button',{name:'Preview 새로고침'})).toBeEnabled();
-    page.once('dialog',dialog=>dialog.accept());
-    await page.locator('#discard').click();
+    await page.locator('#discard').click();await page.getByRole('button',{name:'폐기하기',exact:true}).click();
     await expect(page.locator('#task-state')).toHaveText('폐기 완료');
   });
 }

@@ -26,3 +26,24 @@ test('workspace shows the selected project and remembers its visual theme',async
   await theme.selectOption({label:'그린'});
   await expect(root).toHaveCSS('background-color','rgb(245, 246, 242)');
 });
+
+test('workspace distinguishes an empty project list from a disconnected Agent',async({page})=>{
+  let connected=true;
+  let projects:{id:string;name:string}[]=[];
+  await page.route('**/api/session',route=>route.fulfill({json:{user:'tester',connected}}));
+  await page.route('**/api/projects',route=>route.fulfill({json:projects}));
+  await page.route('**/api/models',route=>route.fulfill({json:[]}));
+  await page.goto('/');
+  const picker=page.getByLabel('프로젝트',{exact:true});
+  await expect(picker.locator('option')).toHaveText('등록된 프로젝트가 없습니다');
+  await expect(picker).toBeDisabled();
+  await expect(page.getByRole('heading',{name:'등록된 프로젝트가 없습니다'})).toBeVisible();
+  await expect(page.getByRole('button',{name:'새 작업 시작'})).toBeDisabled();
+
+  connected=false;
+  await expect(picker.locator('option')).toHaveText('Agent 연결 대기 중');
+  projects=[{id:'tb-admin',name:'관리자사이트'}];
+  connected=true;
+  await expect(picker).toHaveValue('tb-admin');
+  await expect(page.getByRole('button',{name:'새 작업 시작'})).toBeEnabled();
+});
